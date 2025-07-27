@@ -1,0 +1,26 @@
+{
+  "name": "callcenter-webrtc",
+  "version": "1.0.0",
+  "description": "Call Center",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "@tailwindcss/cli": "^4.1.11",
+    "tailwindcss": "^4.1.11",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "keywords": [
+    "webrtc",
+    "websocket",
+    "call-center",
+    "video-call"
+  ],
+  "author": "olive",
+  "license": "MIT"
+}

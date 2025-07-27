@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="./output.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <title>Centre d'appel</title>
+</head>
+<body class="bg-gradient-to-br from-green-400 to-purple-900 min-h-screen flex justify-center items-center">
+
+    <div class="container bg-white bg-opacity-95 rounded-2xl p-8 shadow-xl max-w-3xl w-full">
+        <div class="login-form text-center mb-8" id="loginForm">
+            <h1 class="text-3xl text-gray-800 mb-4">Mon call center</h1>
+            <input type="text" id="usernameInput" class="p-3 border-2 border-gray-300 rounded-full w-full mb-4 text-lg focus:outline-none focus:border-indigo-500" placeholder="Votre nom d'utilisateur" />
+            <button class="btn bg-gradient-to-br from-indigo-500 to-green-500 text-white py-2 px-6 rounded-full text-lg transition-all transform hover:scale-105" onclick="joinCallCenter()">Se connecter</button>
+        </div>
+        <div class="user-list hidden" id="userList">
+            <h2 class="text-xl text-gray-800 mb-4">Tous les Utilisateurs connectés</h2>
+            <div class="users grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" id="users"></div>
+        </div>
+        <div class="status hidden text-center mt-4" id="status"></div>
+        <div class="video-container hidden mt-8 gap-4" id="videoContainer">
+            <div class="video-wrapper text-center flex-1">
+                <h3>Vous</h3>
+                <video id="localVideo" class="w-full max-w-xs rounded-lg bg-black" autoplay muted></video>
+            </div>
+            <div class="video-wrapper text-center flex-1">
+                <h3 id="remoteUserName">Contacter</h3>
+                <video id="remoteVideo" class="w-full max-w-xs rounded-lg bg-black" autoplay></video>
+            </div>
+        </div>
+        <div class="call-controls hidden justify-center gap-4 mt-4" id="callControls">
+            <button class="btn-danger bg-red-600 text-white py-2 px-8 rounded-full text-lg" onclick="hangUp()">Raccrocher</button>
+        </div>
+        <div class="incoming-call hidden fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-white p-8 rounded-lg shadow-2xl text-center z-50" id="incomingCall">
+            <h3 class="text-xl mb-4">📞 Appel entrant</h3>
+            <p>Appel de <span id="callerName" class="font-semibold"></span></p>
+            <button class="btn-success bg-green-600 text-white py-2 px-6 rounded-full text-lg mt-4" onclick="acceptCall()">Accepter l'appel</button>
+            <button class="btn-danger bg-red-600 text-white py-2 px-6 rounded-full text-lg mt-4" onclick="rejectCall()">Refuser l'appel</button>
+        </div>
+    </div>
+
+    <script>
+        let ws;
+        let localStream;
+        let remoteStream;
+        let peerConnection;
+        let currentUser;
+        let incomingCaller;
+        let currentCall;
+
+        const configuration = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        };
+
+        function joinCallCenter() {
+            const username = document.getElementById('usernameInput').value.trim();
+            if (!username) {
+                showStatus('Veuillez entrer un nom d\'utilisateur', 'error');
+                return;
+            }
+            currentUser = username;
+            connectWebSocket();
+        }
+
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}`;
+            ws = new WebSocket(wsUrl);
+            ws.onopen = () => {
+                ws.send(JSON.stringify({
+                    type: 'join',
+                    username: currentUser
+                }));
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                handleMessage(data);
+            };
+
+            ws.onclose = () => {
+                showStatus('Connexion fermée', 'error');
+            };
+
+            ws.onerror = (error) => {
+                showStatus('Erreur de connexion', 'error');
+            };
+        }
+
+        function handleMessage(data) {
+            switch (data.type) {
+                case 'joined':
+                    document.getElementById('loginForm').style.display = 'none';
+                    document.getElementById('userList').style.display = 'block';
+                    showStatus(`Connecté en tant que ${data.username}`, 'success');
+                    break;
+
+                case 'user-list':
+                    updateUserList(data.users);
+                    break;
+
+                case 'incoming-call':
+                    handleIncomingCall(data.from);
+                    break;
+
+                case 'call-accepted':
+                    handleCallAccepted(data.from);
+                    break;
+
+                case 'call-rejected':
+                    showStatus(`Appel refusé par ${data.from}`, 'error');
+                    break;
+
+                case 'offer':
+                    handleOffer(data);
+                    break;
+
+                case 'answer-webrtc':
+                    handleAnswer(data);
+                    break;
+
+                case 'ice-candidate':
+                    handleIceCandidate(data);
+                    break;
+
+                case 'hangup':
+                    handleHangup();
+                    break;
+
+                case 'error':
+                    showStatus(data.message, 'error');
+                    break;
+            }
+        }
+
+        function updateUserList(users) {
+            const usersDiv = document.getElementById('users');
+            usersDiv.innerHTML = '';
+            users.forEach(user => {
+                const userCard = document.createElement('div');
+                userCard.className = 'user-card bg-gray-200 p-4 rounded-lg cursor-pointer hover:bg-gray-300 transition-all';
+                if (user === currentUser) {
+                    userCard.classList.add('bg-green-200');
+                    userCard.innerHTML = `<strong>${user} (Vous)</strong>`;
+                } else {
+                    userCard.innerHTML = user;
+                    userCard.onclick = () => callUser(user);
+                }
+                usersDiv.appendChild(userCard);
+            });
+        }
+
+        function callUser(username) {
+            if (currentCall) {
+                showStatus('Vous êtes déjà en appel', 'error');
+                return;
+            }
+
+            currentCall = username;
+            showStatus(`Appel de ${username}...`, 'info');
+
+            ws.send(JSON.stringify({
+                type: 'call',
+                to: username
+            }));
+        }
+
+        function handleIncomingCall(from) {
+            incomingCaller = from;
+            document.getElementById('callerName').textContent = from;
+            document.getElementById('incomingCall').style.display = 'block';
+        }
+
+        function acceptCall() {
+            document.getElementById('incomingCall').style.display = 'none';
+            currentCall = incomingCaller;
+
+            ws.send(JSON.stringify({
+                type: 'answer',
+                from: incomingCaller
+            }));
+
+            initializeMedia(false);
+        }
+
+        function rejectCall() {
+            document.getElementById('incomingCall').style.display = 'none';
+
+            ws.send(JSON.stringify({
+                type: 'reject',
+                from: incomingCaller
+            }));
+            incomingCaller = null;
+        }
+
+        function handleCallAccepted(from) {
+            showStatus(`Appel accepté par ${from}`, 'success');
+            initializeMedia(true);
+        }
+
+        async function initializeMedia(isInitiator) {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    video: true,
+                    audio: true
+                });
+
+                document.getElementById('localVideo').srcObject = localStream;
+                document.getElementById('videoContainer').style.display = 'grid';
+                document.getElementById('callControls').style.display = 'flex';
+                document.getElementById('remoteUserName').textContent = currentCall;
+
+                await initializePeerConnection();
+
+                if (isInitiator) {
+                    await createOffer();
+                }
+
+            } catch (error) {
+                console.error('Erreur accès média:', error);
+                showStatus('Erreur d\'accès à la caméra/micro', 'error');
+            }
+        }
+
+        async function initializePeerConnection() {
+            peerConnection = new RTCPeerConnection(configuration);
+
+            localStream.getTracks().forEach(track => {
+                peerConnection.addTrack(track, localStream);
+            });
+
+            peerConnection.ontrack = (event) => {
+                remoteStream = event.streams[0];
+                document.getElementById('remoteVideo').srcObject = remoteStream;
+            };
+
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    ws.send(JSON.stringify({
+                        type: 'ice-candidate',
+                        candidate: event.candidate,
+                        to: currentCall
+                    }));
+                }
+            };
+        }
+
+        async function createOffer() {
+            try {
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+
+                ws.send(JSON.stringify({
+                    type: 'offer',
+                    offer: offer,
+                    to: currentCall
+                }));
+            } catch (error) {
+                console.error('Erreur création offer:', error);
+            }
+        }
+
+        async function handleOffer(data) {
+            try {
+                await peerConnection.setRemoteDescription(data.offer);
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+
+                ws.send(JSON.stringify({
+                    type: 'answer-webrtc',
+                    answer: answer,
+                    to: data.from
+                }));
+            } catch (error) {
+                console.error('Erreur traitement offer:', error);
+            }
+        }
+
+        async function handleAnswer(data) {
+            try {
+                await peerConnection.setRemoteDescription(data.answer);
+            } catch (error) {
+                console.error('Erreur traitement answer:', error);
+            }
+        }
+
+        async function handleIceCandidate(data) {
+            try {
+                await peerConnection.addIceCandidate(data.candidate);
+            } catch (error) {
+                console.error('Erreur ajout ICE candidate:', error);
+            }
+        }
+
+        function hangUp() {
+            if (currentCall) {
+                ws.send(JSON.stringify({
+                    type: 'hangup',
+                    to: currentCall
+                }));
+            }
+            endCall();
+        }
+
+        function handleHangup() {
+            endCall();
+            showStatus('Appel terminé', 'info');
+        }
+
+        function endCall() {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+
+            document.getElementById('videoContainer').style.display = 'none';
+            document.getElementById('callControls').style.display = 'none';
+            document.getElementById('localVideo').srcObject = null;
+            document.getElementById('remoteVideo').srcObject = null;
+
+            currentCall = null;
+            remoteStream = null;
+        }
+
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${type} p-4 rounded-lg mt-4`;
+            status.style.display = 'block';
+
+            setTimeout(() => {
+                status.style.display = 'none';
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
